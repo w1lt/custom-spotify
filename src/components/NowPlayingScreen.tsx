@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress"; // <-- Add this
 import { formatDuration } from "@/lib/utils"; // Assuming you have this helper
 import type { Spotify } from "@/types/spotify-sdk";
+import { usePalette } from "color-thief-react";
 
 interface NowPlayingScreenProps {
   isOpen: boolean;
@@ -60,8 +61,15 @@ export default function NowPlayingScreen({
 
       if (!albumImageRef.current) return;
 
+      console.log(
+        `Rotation event: isPlaying=${isPlaying}, currentAngle=${currentAngle}`
+      );
+
+      // When playing, always start the animation
       if (isPlaying) {
         // Starting or resuming playback
+        console.log("Starting rotation animation");
+
         // Use the angle from context if available, otherwise use our tracked angle
         animationStateRef.current.currentAngle =
           currentAngle || animationStateRef.current.currentAngle;
@@ -72,12 +80,18 @@ export default function NowPlayingScreen({
         // Dynamically create animation starting from exact current angle
         updateRotationAnimation(animationStateRef.current.currentAngle);
 
-        // Apply animation
+        // Apply animation - force a style recalculation by removing and setting in separate operations
+        albumImageRef.current.style.animation = "none";
+        // Force a reflow to ensure the animation reset takes effect
+        void albumImageRef.current.offsetWidth;
+        // Now apply the new animation
         albumImageRef.current.style.animation =
           "album-rotate 20s linear infinite";
         albumImageRef.current.style.transform = `rotate(${animationStateRef.current.currentAngle}deg)`;
       } else {
         // Pausing playback - calculate and save exact current angle
+        console.log("Stopping rotation animation");
+
         if (animationStateRef.current.startTime > 0) {
           const elapsedMs = timestamp - animationStateRef.current.startTime;
           const degreesPerMs = 360 / (20 * 1000); // 360° every 20 seconds
@@ -90,6 +104,10 @@ export default function NowPlayingScreen({
           // Stop animation but set transform to exact current angle
           albumImageRef.current.style.animation = "none";
           albumImageRef.current.style.transform = `rotate(${animationStateRef.current.currentAngle}deg)`;
+
+          // When pausing, update the rotation angle in the shared state so other components know
+          // This won't cause skipping because we've already removed the animation
+          controls.setRotationAngle(animationStateRef.current.currentAngle);
         }
       }
     };
@@ -106,7 +124,7 @@ export default function NowPlayingScreen({
         handleRotationEvent as EventListener
       );
     };
-  }, []);
+  }, [controls]);
 
   // Function to update the keyframes animation
   const updateRotationAnimation = (startAngle: number) => {
@@ -163,6 +181,46 @@ export default function NowPlayingScreen({
   const effectiveDurationMs = useSdkState
     ? sdkPlayerState?.duration ?? 0
     : globalPlaybackState?.item?.duration_ms ?? 0;
+
+  // Also respond to playback state changes directly
+  useEffect(() => {
+    if (!albumImageRef.current) return;
+
+    // Ensure we reflect the correct playback state
+    if (effectiveIsPlaying) {
+      console.log("Playback state changed to playing - starting animation");
+
+      // Make sure we have the current angle
+      const currentAngle = animationStateRef.current.currentAngle;
+
+      // Create fresh animation keyframes
+      updateRotationAnimation(currentAngle);
+
+      // Restart animation with current angle
+      albumImageRef.current.style.animation = "none";
+      void albumImageRef.current.offsetWidth; // Force reflow
+      albumImageRef.current.style.animation =
+        "album-rotate 20s linear infinite";
+      albumImageRef.current.style.transform = `rotate(${currentAngle}deg)`;
+
+      // Update timestamp for future pause calculations
+      animationStateRef.current.startTime = Date.now();
+      animationStateRef.current.startAngle = currentAngle;
+    } else {
+      // Stop animation when paused
+      console.log("Playback state changed to paused - stopping animation");
+      albumImageRef.current.style.animation = "none";
+      // Make sure we save the current angle
+      if (animationStateRef.current.startTime > 0) {
+        const elapsed = Date.now() - animationStateRef.current.startTime;
+        const degreesPerMs = 360 / (20 * 1000);
+        const rotationDelta = (elapsed * degreesPerMs) % 360;
+        animationStateRef.current.currentAngle =
+          (animationStateRef.current.startAngle + rotationDelta) % 360;
+        albumImageRef.current.style.transform = `rotate(${animationStateRef.current.currentAngle}deg)`;
+      }
+    }
+  }, [effectiveIsPlaying]);
 
   // Use localProgress from context rather than calculating our own
   const effectiveProgressMs =
@@ -229,6 +287,47 @@ export default function NowPlayingScreen({
       ? effectiveTrack.show?.name
       : null;
 
+  // Use color-thief-react to extract dominant colors from the album art
+  const { data: palette } = usePalette(
+    albumArtUrl || showArtUrl || "",
+    3,
+    "hex",
+    {
+      crossOrigin: "anonymous",
+      quality: 10,
+    }
+  );
+
+  // Helper function to convert hex to rgba
+  const hexToRgba = (hex: string, alpha: number) => {
+    // Remove # if present
+    hex = hex.replace("#", "");
+
+    // Parse the hex values to RGB
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+
+    // Return rgba string
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  };
+
+  // Set fallback colors for gradient if palette not available
+  const colorPrimary = palette?.[0] || "#1e1e1e";
+  const colorSecondary = palette?.[1] || "#121212";
+
+  // Create gradient background style with proper color formatting using rgba
+  const backgroundStyle = palette
+    ? {
+        background: `linear-gradient(to bottom, ${hexToRgba(
+          colorPrimary,
+          1.0
+        )}, ${hexToRgba(colorSecondary, 0.9)}, #121212)`,
+      }
+    : {
+        background: "linear-gradient(to bottom, #1e1e1e, #171717, #121212)",
+      };
+
   // Determine animation class based on isOpen state
   const animationClass = isOpen
     ? "translate-y-0 opacity-100"
@@ -236,26 +335,27 @@ export default function NowPlayingScreen({
 
   return (
     <div
-      className={`fixed inset-0 z-[100] bg-gradient-to-b from-neutral-800 to-neutral-900 text-white flex flex-col items-center transition-all duration-500 ease-in-out ${animationClass} overflow-hidden`}
+      className={`fixed inset-0 z-[100] text-white flex flex-col items-center transition-all duration-500 ease-in-out ${animationClass} overflow-hidden`}
+      style={backgroundStyle}
     >
       {/* Top Bar (Close Button) */}
-      <div className="w-full flex justify-end p-4">
+      <div className="w-full flex justify-end p-4 sticky top-0 z-10 bg-gradient-to-b from-black/20 to-transparent">
         <Button variant="ghost" size="icon" onClick={close}>
           <ChevronDown size={24} />
         </Button>
       </div>
 
-      {/* Main Content Area with album art centered */}
-      <div className="flex flex-col items-center justify-center flex-grow w-full px-4 max-w-xl">
-        {/* Album Art / Show Art - centered and larger on mobile */}
-        <div className="aspect-square w-64 sm:w-72 md:w-80 lg:w-96 relative mb-6 sm:mb-8">
+      {/* Main Content Area with album art centered - height constrained */}
+      <div className="flex flex-col items-center justify-center w-full px-4 max-w-xl py-0 md:py-4 flex-1">
+        {/* Album Art / Show Art - smaller size */}
+        <div className="aspect-square w-48 sm:w-52 md:w-56 lg:w-64 relative mb-4 sm:mb-6">
           {albumArtUrl ? (
             <Image
               ref={albumImageRef}
               src={albumArtUrl}
               alt={albumName ?? "Album art"}
               fill
-              sizes="(max-width: 640px) 256px, (max-width: 768px) 288px, (max-width: 1024px) 320px, 384px"
+              sizes="(max-width: 640px) 192px, (max-width: 768px) 208px, (max-width: 1024px) 224px, 256px"
               className="object-cover rounded-full shadow-lg"
               style={{
                 willChange: "transform",
@@ -267,7 +367,7 @@ export default function NowPlayingScreen({
               src={showArtUrl}
               alt={showName ?? "Show art"}
               fill
-              sizes="(max-width: 640px) 256px, (max-width: 768px) 288px, (max-width: 1024px) 320px, 384px"
+              sizes="(max-width: 640px) 192px, (max-width: 768px) 208px, (max-width: 1024px) 224px, 256px"
               className="object-cover rounded-lg shadow-lg"
               priority
             />
@@ -279,12 +379,12 @@ export default function NowPlayingScreen({
           )}
         </div>
 
-        {/* Track Info */}
-        <div className="text-center mb-6">
-          <h2 className="text-xl sm:text-2xl font-bold truncate max-w-sm">
+        {/* Track Info - visible on mobile, hidden on desktop */}
+        <div className="text-center mb-4 md:hidden">
+          <h2 className="text-xl font-bold truncate max-w-sm">
             {effectiveTrack?.name ?? "--"}
           </h2>
-          <p className="text-sm sm:text-lg text-neutral-400 truncate max-w-xs">
+          <p className="text-sm text-neutral-400 truncate max-w-xs">
             {effectiveTrack && "artists" in effectiveTrack
               ? effectiveTrack.artists
                   ?.map((a: Spotify.Artist) => a.name)
@@ -296,9 +396,27 @@ export default function NowPlayingScreen({
         </div>
       </div>
 
-      {/* Fixed bottom controls - no dark background */}
-      <div className="w-full p-4 sm:p-6">
+      {/* Fixed bottom controls - always visible */}
+      <div className="w-full p-4 sm:p-6 sticky bottom-0 bg-gradient-to-t from-black/20 to-transparent">
         <div className="max-w-xl mx-auto">
+          {/* Track Info in row format - desktop only */}
+          <div className="hidden md:flex items-center justify-between w-full mb-2">
+            <div className="overflow-hidden">
+              <h2 className="text-xl font-bold truncate max-w-xs">
+                {effectiveTrack?.name ?? "--"}
+              </h2>
+              <p className="text-sm text-neutral-400 truncate max-w-xs">
+                {effectiveTrack && "artists" in effectiveTrack
+                  ? effectiveTrack.artists
+                      ?.map((a: Spotify.Artist) => a.name)
+                      .join(", ")
+                  : showName
+                  ? showName
+                  : "-"}
+              </p>
+            </div>
+          </div>
+
           {/* Progress Bar */}
           <div
             ref={progressContainerRef}

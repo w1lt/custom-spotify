@@ -44,6 +44,7 @@ import type { Spotify } from "@/types/spotify-sdk";
 import { Slider } from "@/components/ui/slider";
 import { formatDuration } from "@/lib/utils";
 import NowPlayingScreen from "./NowPlayingScreen";
+import useSWR from "swr";
 
 function getDeviceIcon(
   deviceType: string | undefined,
@@ -77,6 +78,13 @@ export default function PlayerFooter() {
     playbackError,
     devicesError,
   } = playerState;
+
+  // Add SWR hook for recently played tracks
+  const { data: recentTrack, error: recentTrackError } = useSWR<any>(
+    "/api/spotify/recently-played",
+    (url) => fetch(url).then((res) => res.json()),
+    { revalidateOnFocus: false, shouldRetryOnError: false }
+  );
 
   // Determine if the SDK is the *globally* active Spotify device
   const sdkIsActiveGlobally = Boolean(
@@ -124,7 +132,166 @@ export default function PlayerFooter() {
 
   // --- Check if anything is playable ---
   if (!effectiveTrack) {
-    // Render nothing or a minimal placeholder if nothing is loaded
+    // Check if we have a recently played track
+    const recentTrackItem = recentTrack?.track;
+
+    if (recentTrackItem) {
+      // Show the recently played track instead
+      return (
+        <>
+          <footer
+            className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white flex items-center justify-between md:grid md:grid-cols-3 px-4 sm:px-6 md:px-8 gap-4 cursor-pointer md:cursor-default md:pointer-events-none"
+            onClick={() => setIsNowPlayingOpen(true)}
+          >
+            <div className="flex items-center space-x-3 min-w-0 md:pointer-events-auto">
+              {recentTrackItem?.album?.images?.[0]?.url && (
+                <Image
+                  src={recentTrackItem.album.images[0].url}
+                  alt={recentTrackItem.album.name ?? "Album art"}
+                  width={64}
+                  height={64}
+                  className="flex-shrink-0 w-12 h-12 md:w-16 md:h-16 rounded-xl aspect-square object-cover cursor-pointer hover:scale-105 transition-transform"
+                  unoptimized
+                />
+              )}
+              <div className="overflow-hidden">
+                <p className="text-sm font-medium truncate hover:underline cursor-pointer">
+                  {recentTrackItem.name}
+                </p>
+                <p className="text-xs text-gray-400 truncate">
+                  {recentTrackItem.artists.map((a: any) => a.name).join(", ")}
+                </p>
+                <p className="text-xs text-gray-500">Recently played</p>
+              </div>
+            </div>
+
+            <div className="hidden md:flex flex-col items-center md:pointer-events-auto">
+              <div className="flex items-center space-x-2 sm:space-x-4 mb-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled
+                  className="text-gray-400 opacity-50 cursor-not-allowed"
+                >
+                  <SkipBack size={20} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // Just play the recent track's album context
+                    if (recentTrackItem?.album?.uri) {
+                      controls.playContext(recentTrackItem.album.uri as string);
+                    }
+                  }}
+                  className="h-10 w-10 rounded-full bg-white text-black hover:scale-105 flex items-center justify-center"
+                >
+                  <Play size={20} className="ml-0.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled
+                  className="text-gray-400 opacity-50 cursor-not-allowed"
+                >
+                  <SkipForward size={20} />
+                </Button>
+              </div>
+            </div>
+
+            <div className="hidden md:flex items-center justify-end space-x-2 md:pointer-events-auto">
+              <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    title="Connect to a device"
+                    className="text-gray-400 hover:text-white"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MonitorSpeaker size={20} />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="w-72 p-0 bg-neutral-900 border-neutral-700 text-white"
+                  align="end"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Command className="bg-transparent text-white">
+                    <CommandInput
+                      placeholder="Search devices..."
+                      className="border-b border-neutral-700 focus:ring-0"
+                    />
+                    <CommandList>
+                      <CommandEmpty>No devices found</CommandEmpty>
+                      <CommandGroup heading="Available Devices">
+                        {devices?.map((device) => (
+                          <CommandItem
+                            key={device.id}
+                            onSelect={() =>
+                              device.id && handleTransferClick(device.id)
+                            }
+                            disabled={isTransferring}
+                            className={`${
+                              device.is_active ? "bg-neutral-800" : ""
+                            } cursor-pointer`}
+                          >
+                            <div className="flex items-center w-full">
+                              <span className="mr-2">
+                                {getDeviceIcon(
+                                  device.type,
+                                  device.is_active,
+                                  device.id === sdkDeviceId
+                                )}
+                              </span>
+                              <span className="flex-grow">
+                                {device.name}{" "}
+                                {device.is_active && (
+                                  <span className="text-green-500 ml-1">
+                                    (active)
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </footer>
+
+          <NowPlayingScreen
+            isOpen={isNowPlayingOpen}
+            close={() => setIsNowPlayingOpen(false)}
+          />
+        </>
+      );
+    }
+
+    // Render nothing if no current track and no recent track
+    if (globalPlaybackState === undefined && !sdkPlayerState) {
+      return (
+        <footer className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white grid grid-cols-3 items-center px-4 sm:px-6 md:px-8 gap-4">
+          <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+        </footer>
+      );
+    }
+
+    if (
+      (!globalPlaybackState || !globalPlaybackState.item) &&
+      !sdkPlayerState?.track_window?.current_track
+    ) {
+      return (
+        <footer className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white grid grid-cols-3 items-center px-4 sm:px-6 md:px-8 gap-4">
+          <p className="text-gray-400 mr-4">Nothing currently playing</p>
+        </footer>
+      );
+    }
+
     return null; // Don't show the footer
   }
 
@@ -172,25 +339,6 @@ export default function PlayerFooter() {
     return (
       <footer className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white grid grid-cols-3 items-center px-4 sm:px-6 md:px-8 gap-4">
         <p className="text-red-500">Error loading player state</p>
-      </footer>
-    );
-  }
-
-  if (globalPlaybackState === undefined && !sdkPlayerState) {
-    return (
-      <footer className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white grid grid-cols-3 items-center px-4 sm:px-6 md:px-8 gap-4">
-        <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-      </footer>
-    );
-  }
-
-  if (
-    (!globalPlaybackState || !globalPlaybackState.item) &&
-    !sdkPlayerState?.track_window?.current_track
-  ) {
-    return (
-      <footer className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white grid grid-cols-3 items-center px-4 sm:px-6 md:px-8 gap-4">
-        <p className="text-gray-400 mr-4">Nothing currently playing</p>
       </footer>
     );
   }

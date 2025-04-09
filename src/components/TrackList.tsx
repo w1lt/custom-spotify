@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Image from "next/image";
 import { Clock, Play, Loader2, Music } from "lucide-react"; // Added Music icon
 import { useSWRConfig } from "swr"; // To trigger footer refresh
@@ -28,7 +28,13 @@ export default function TrackList({ tracks, playlistUri }: TrackListProps) {
     null
   );
   const [loadingTrackUri, setLoadingTrackUri] = useState<string | null>(null);
-  const { controls } = usePlayer(); // Get controls from context
+  const { playerState, controls } = usePlayer(); // Get playerState and controls from context
+
+  // Update currentlyPlayingUri when the global playback state changes
+  useEffect(() => {
+    const currentTrackUri = playerState.globalPlaybackState?.item?.uri ?? null;
+    setCurrentlyPlayingUri(currentTrackUri);
+  }, [playerState.globalPlaybackState]);
 
   const playTrack = async (trackUri: string, position: number) => {
     if (loadingTrackUri === trackUri) return; // Prevent multiple clicks on the same loading track
@@ -67,8 +73,10 @@ export default function TrackList({ tracks, playlistUri }: TrackListProps) {
             <li
               key={`${item.track.id}-${index}`}
               onClick={() => playTrack(item.track!.uri, index)}
-              // Use Flexbox layout
-              className="flex items-center justify-between p-2 rounded-md hover:bg-muted/50 group cursor-pointer"
+              // Use Flexbox layout with conditional background color for currently playing track
+              className={`flex items-center justify-between p-2 rounded-md hover:bg-muted/50 group cursor-pointer ${
+                currentlyPlayingUri === item.track.uri ? "bg-muted/80" : ""
+              }`}
             >
               {/* Left Group: Image + Title/Artist Column */}
               <div className="flex items-center space-x-3 overflow-hidden">

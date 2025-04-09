@@ -84,6 +84,7 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
   const progressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const rotationTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastUpdateTimeRef = useRef<number>(0);
+  const isPlayingRef = useRef<boolean>(false);
 
   // --- SWR Hooks ---
   const {
@@ -195,25 +196,32 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
         ? !sdkPlayerState.paused
         : globalPlaybackState?.is_playing ?? false;
 
-    // Instead of continuously updating state, we'll dispatch a custom event
-    // that components can listen for to start/stop CSS animations
-    const rotationEvent = new CustomEvent("album-rotation", {
-      detail: {
-        isPlaying,
-        timestamp: Date.now(),
-        currentAngle: rotationAngle,
-      },
-    });
-    window.dispatchEvent(rotationEvent);
+    // Only dispatch events for actual playback state changes, not for every rotation angle update
+    // This prevents circular dependencies that cause maximum update depth errors
+    const shouldDispatchEvent = isPlayingRef.current !== isPlaying;
 
-    // We still keep the rotation angle state for components that might need the current angle
-    // but we update it much less frequently - only for reference, not for the animation
-    if (isPlaying && rotationTimerRef.current === null) {
-      // Update rotation angle only every second for state sync (not for animation)
-      rotationTimerRef.current = setInterval(() => {
-        setRotationAngle((prev) => (prev + 360 / 20) % 360); // 360° every 20 seconds
-      }, 1000);
-    } else if (!isPlaying && rotationTimerRef.current) {
+    if (shouldDispatchEvent) {
+      isPlayingRef.current = isPlaying;
+      console.log(
+        `PlayerContext: Playback state changed to ${
+          isPlaying ? "playing" : "paused"
+        }`
+      );
+
+      // Instead of continuously updating state, we'll dispatch a custom event
+      // that components can listen for to start/stop CSS animations
+      const rotationEvent = new CustomEvent("album-rotation", {
+        detail: {
+          isPlaying,
+          timestamp: Date.now(),
+          currentAngle: rotationAngle,
+        },
+      });
+      window.dispatchEvent(rotationEvent);
+    }
+
+    // Clear any existing rotation timer
+    if (rotationTimerRef.current) {
       clearInterval(rotationTimerRef.current);
       rotationTimerRef.current = null;
     }
@@ -229,7 +237,7 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
     sdkPlayerState?.paused,
     sdkDeviceId,
     globalPlaybackState?.device?.id,
-    rotationAngle,
+    rotationAngle, // Include rotationAngle to ensure we get the latest value
   ]);
 
   // --- SDK Token Fetcher ---
@@ -635,6 +643,7 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
 
   // --- Set rotation angle manually ---
   const updateRotationAngle = useCallback((angle: number) => {
+    // Simply update the angle state without triggering additional events
     setRotationAngle(angle);
   }, []);
 
