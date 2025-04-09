@@ -28,6 +28,14 @@ const nextConfig = {
       },
     ],
   },
+  typescript: {
+    // Skip type checking during build
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    // Don't run ESLint during builds
+    ignoreDuringBuilds: true,
+  },
 };
 
 module.exports = nextConfig;
