@@ -1,103 +1,154 @@
+"use client"; // Convert to Client Component
+
+import React, { useEffect } from "react";
+import useSWR from "swr";
+import { useSession, signIn } from "next-auth/react";
+// Removed getServerSession, authOptions, spotifyApi (default instance), redirect
+import Link from "next/link";
 import Image from "next/image";
+import UserProfileButton from "@/components/UserProfileButton";
+import PlayerFooter from "@/components/PlayerFooter";
+import { Badge } from "@/components/ui/badge";
+import { ListMusic, Loader2 } from "lucide-react";
+import PlaylistCardSkeleton from "@/components/PlaylistCardSkeleton"; // Import the skeleton
 
-export default function Home() {
+// Type Definitions (can remain the same or be moved)
+type UserProfile = SpotifyApi.CurrentUsersProfileResponse;
+type Playlist = SpotifyApi.PlaylistObjectSimplified;
+
+// Fetcher function for SWR
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
+
+export default function HomePage() {
+  const { data: session, status } = useSession();
+
+  // --- Data Fetching with SWR ---
+  // Fetch user profile
+  const { data: userProfile, error: profileError } = useSWR<UserProfile>(
+    status === "authenticated" ? "/api/spotify/me" : null, // Only fetch if authenticated
+    fetcher
+  );
+
+  // Fetch playlists
+  const { data: playlistsData, error: playlistsError } = useSWR<{
+    items: Playlist[];
+  }>(
+    status === "authenticated" ? "/api/spotify/playlists" : null, // Only fetch if authenticated
+    fetcher
+  );
+  const playlists = playlistsData?.items;
+
+  // --- Authentication Handling ---
+  useEffect(() => {
+    // If unauthenticated after loading, redirect to login
+    if (status === "unauthenticated") {
+      signIn("spotify"); // Or redirect to /login page: router.push('/login');
+    }
+  }, [status]);
+
+  // Loading state for authentication
+  if (status === "loading") {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+        <Loader2 className="h-12 w-12 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // --- Error Handling ---
+  // Combine potential errors
+  const apiError = profileError || playlistsError;
+  if (apiError) {
+    console.error("Error fetching Spotify data (client-side):", apiError);
+    return (
+      <div className="min-h-screen flex flex-col">
+        {/* Optional: Render header even on error? */}
+        <main className="container mx-auto px-4 py-8 flex-grow flex flex-col items-center justify-center">
+          <h1 className="text-2xl text-red-500 mb-4">Error fetching data</h1>
+          <p className="mb-4 text-center">
+            Could not retrieve your Spotify data. Please try refreshing the page
+            or logging out and back in.
+          </p>
+          {/* We can use the UserProfileButton which handles signout */}
+          {userProfile && <UserProfileButton userProfile={userProfile} />}
+        </main>
+        <PlayerFooter /> {/* Keep footer visible */}
+      </div>
+    );
+  }
+
+  // --- Main Content Rendering ---
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+    <div className="min-h-screen flex flex-col">
+      <header className="container mx-auto px-4 py-4 sticky top-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10">
+        <div className="flex justify-between items-center">
+          <h1 className="text-2xl font-bold">My Playlists</h1>
+          {/* Show UserProfileButton once profile data is loaded */}
+          {userProfile ? (
+            <UserProfileButton userProfile={userProfile} />
+          ) : (
+            <div className="w-10 h-10 bg-muted rounded-full animate-pulse"></div>
+          )}
+        </div>
+      </header>
+      <main className="container mx-auto px-4 py-8 flex-grow">
+        {/* Playlist Grid or Skeletons */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {!playlists ? (
+            // Show Skeletons while playlists are loading
+            Array.from({ length: 12 }).map(
+              (
+                _,
+                index // Adjust skeleton count as needed
+              ) => <PlaylistCardSkeleton key={index} />
+            )
+          ) : playlists.length > 0 ? (
+            // Render actual playlists once loaded
+            playlists.map((playlist) => (
+              <Link
+                href={`/playlist/${playlist.id}`}
+                key={playlist.id}
+                className="group relative block bg-card p-4 rounded-lg shadow hover:shadow-lg transition-shadow duration-200 overflow-hidden"
+              >
+                <div className="aspect-square mb-3 relative">
+                  {playlist.images?.[0]?.url ? (
+                    <Image
+                      src={playlist.images[0].url}
+                      alt={`${playlist.name} cover`}
+                      fill
+                      sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, (max-width: 1280px) 20vw, 16.6vw"
+                      className="object-cover rounded group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-muted rounded flex items-center justify-center">
+                      <ListMusic className="w-1/2 h-1/2 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/10 group-hover:bg-black/0 transition-colors duration-300"></div>
+                </div>
+                <h3 className="text-base font-semibold text-card-foreground truncate mb-1 group-hover:text-primary">
+                  {playlist.name}
+                </h3>
+                <p className="text-sm text-muted-foreground truncate mb-2">
+                  By {playlist.owner.display_name}
+                </p>
+                <div className="flex justify-between items-center text-xs text-muted-foreground">
+                  <span>{playlist.tracks.total} tracks</span>
+                  {playlist.public === false && (
+                    <Badge variant="outline">Private</Badge>
+                  )}
+                </div>
+              </Link>
+            ))
+          ) : (
+            // Handle case where playlists loaded but are empty
+            <p className="col-span-full text-center text-muted-foreground">
+              No playlists found.
+            </p>
+          )}
         </div>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      <PlayerFooter /> {/* Footer remains visible */}
     </div>
   );
 }
