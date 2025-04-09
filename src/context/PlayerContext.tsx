@@ -24,6 +24,7 @@ interface PlayerState {
   sdkDeviceId: string | null;
   sdkPlayerState: SdkPlaybackState;
   globalPlaybackState: CurrentlyPlayingContext | null | undefined;
+  localProgress: number | null;
   devices: SpotifyDevice[] | undefined;
   isTransferring: boolean;
   playbackError: any;
@@ -36,9 +37,10 @@ interface PlayerControls {
   seek: (positionMs: number) => Promise<void>;
   transferPlayback: (deviceId: string) => Promise<void>;
   playContext: (
-    contextUri: string,
+    contextUri?: string,
     offset?: { position?: number; uri?: string }
   ) => Promise<void>;
+  setVolume: (volumePercent: number) => Promise<void>;
 }
 interface PlayerContextValue {
   playerState: PlayerState;
@@ -73,6 +75,9 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
   const [sdkPlayerState, setSdkPlayerState] = useState<SdkPlaybackState>(null);
   const [isTransferring, setIsTransferring] = useState(false);
   const [autoTransferAttempted, setAutoTransferAttempted] = useState(false);
+  const [localProgress, setLocalProgress] = useState<number | null>(null);
+  const progressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastUpdateTimeRef = useRef<number>(0);
 
   // --- SWR Hooks ---
   const {
@@ -82,7 +87,23 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
   } = useSWR<CurrentlyPlayingContext | null>(
     session ? "/api/spotify/playback-state" : null,
     fetcher,
-    { refreshInterval: sdkPlayerState ? 10000 : 5000 }
+    {
+      // Dynamically set refresh interval based on playback state and active device
+      refreshInterval: () => {
+        // Access state from the current closure. This might be slightly stale for the interval decision,
+        // but the fetch itself will get fresh data.
+        const isActive = globalPlaybackState?.device?.id === sdkDeviceId;
+        const isPlaying = globalPlaybackState?.is_playing;
+
+        // console.log(`Context SWR Interval: isActive=${isActive}, isPlaying=${isPlaying}, sdkDeviceId=${sdkDeviceId}, globalDeviceId=${globalPlaybackState?.device?.id}`);
+
+        if (isPlaying && isActive) {
+          return 1000; // Fast refresh when playing on SDK
+        }
+        return 5000; // Slower refresh otherwise (or if initial state is null)
+      },
+      // revalidateOnFocus: false, // Optional: Keep other SWR config
+    }
   );
   const {
     data: devices,
@@ -93,6 +114,42 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
     fetcher,
     { revalidateOnFocus: false, revalidateIfStale: false }
   );
+
+  // Progress tracking effect - maintains local progress between API updates
+  useEffect(() => {
+    // Clear any existing timer
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+
+    // Initialize local progress from API data when it changes
+    if (globalPlaybackState?.progress_ms !== undefined) {
+      setLocalProgress(globalPlaybackState.progress_ms);
+      lastUpdateTimeRef.current = Date.now();
+    }
+
+    // If playing, start local progress timer
+    if (globalPlaybackState?.is_playing && localProgress !== null) {
+      progressTimerRef.current = setInterval(() => {
+        const now = Date.now();
+        const elapsed = now - lastUpdateTimeRef.current;
+        lastUpdateTimeRef.current = now;
+
+        setLocalProgress((prev) => {
+          if (prev === null) return prev;
+          return prev + elapsed;
+        });
+      }, 100); // Update every 100ms for smooth progress
+    }
+
+    return () => {
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
+  }, [globalPlaybackState, localProgress]);
 
   // --- SDK Token Fetcher ---
   const getOAuthToken = useCallback(
@@ -243,10 +300,12 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
   ]);
 
   // --- Memoized Controls ---
+  // Define sdkIsActive here, AFTER globalPlaybackState is defined by useSWR
   const sdkIsActive = useCallback(
     () => globalPlaybackState?.device?.id === sdkDeviceId,
     [globalPlaybackState, sdkDeviceId]
   );
+
   const togglePlay = useCallback(async () => {
     if (!playerRef.current || !sdkIsActive()) return;
     try {
@@ -288,68 +347,124 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
   );
   const playContext = useCallback(
     async (
-      contextUri: string,
+      contextUri?: string,
       offset?: { position?: number; uri?: string }
     ) => {
-      console.log(`Context: Play context req: ${contextUri}`, offset);
+      const requestId = Math.random().toString(36).substring(2, 9);
+      console.log(
+        `[${requestId}] Context: playContext called. contextUri=${contextUri}, offset=`,
+        offset
+      );
+
+      // Determine target device ID (prefer SDK if ready, else use global state)
       let targetDeviceId =
         isSdkReady && sdkDeviceId
-          ? sdkDeviceId // Prefer SDK if ready
-          : globalPlaybackState?.device?.id ?? undefined; // Fallback to global state device
+          ? sdkDeviceId
+          : globalPlaybackState?.device?.id ?? undefined;
 
-      const payload: any = { contextUri, offset };
+      console.log(
+        `[${requestId}] Context: Determined targetDeviceId: ${targetDeviceId}`
+      );
 
-      // If no target device is found, but the SDK is ready, try activating it first
-      if (!targetDeviceId && isSdkReady && sdkDeviceId) {
-        console.warn("No active device, attempting to activate SDK player...");
-        try {
-          await transferPlayback(sdkDeviceId); // Attempt transfer
-          await new Promise((resolve) => setTimeout(resolve, 750)); // Wait for transfer to potentially complete
-          targetDeviceId = sdkDeviceId; // Assume transfer succeeded for the play request
-          console.log("SDK player activated, proceeding with play.");
-        } catch (error) {
-          console.error(
-            "Failed to auto-transfer to SDK before playing:",
-            error
-          );
-          // Optionally alert the user or handle the error differently
-          alert(
-            "Could not activate the web player. Please select a device manually."
-          );
-          return; // Stop if transfer fails
-        }
-      }
-
-      if (targetDeviceId) {
-        payload.deviceId = targetDeviceId;
-      } else {
-        console.warn("No active device found for playContext after check.");
-        // Alert the user or handle the lack of device
-        alert(
-          "No active Spotify device found. Please start playback on a device first."
+      // --- If no active device found, alert user and exit ---
+      if (!targetDeviceId) {
+        console.warn(
+          `[${requestId}] Context: No active device found (SDK ready: ${isSdkReady}, SDK ID: ${sdkDeviceId}, Global ID: ${globalPlaybackState?.device?.id}).`
         );
-        return; // Don't attempt to play if no device ID could be determined
+        alert(
+          "No active Spotify device found. Please start playback on a device (like the Spotify app or web player) and try again."
+        );
+        mutateDevices(); // Refresh device list in case it's stale
+        return; // Stop execution
       }
 
+      // --- Prepare Play Payload ---
+      const payload: {
+        context_uri?: string;
+        uris?: string[];
+        offset?: { position?: number; uri?: string };
+        device_id?: string; // Keep device_id optional here, add it below
+      } = {};
+
+      if (contextUri) {
+        payload.context_uri = contextUri;
+        // Offset is only valid with context_uri according to Spotify API
+        if (offset?.position !== undefined) {
+          payload.offset = { position: offset.position };
+        } else if (offset?.uri !== undefined) {
+          // Play a specific track within the given context
+          payload.offset = { uri: offset.uri };
+          console.log(
+            `[${requestId}] Context: Setting offset URI within context.`
+          );
+        }
+      } else if (offset?.uri) {
+        // Play specific track(s) (no context provided)
+        payload.uris = [offset.uri];
+        // Offset (position or uri) is NOT valid when using 'uris'
+        if (offset.position !== undefined) {
+          console.warn(
+            `[${requestId}] Context: Offset position provided with URI, which is invalid. Ignoring position.`
+          );
+        }
+      } else {
+        console.error(
+          `[${requestId}] Context: Invalid play request - missing contextUri or offset.uri`
+        );
+        alert("Cannot start playback: Invalid track or context specified.");
+        return;
+      }
+
+      // Add the determined device ID to the payload
+      payload.device_id = targetDeviceId;
+
+      console.log(
+        `[${requestId}] Context: Sending play request to API:`,
+        JSON.stringify(payload)
+      );
+
+      // --- Send Play Command ---
       try {
         const res = await fetch("/api/spotify/play", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+
         if (!res.ok) {
-          const err = await res.json();
-          console.error("Play Context Err:", err);
-          alert(`Play failed: ${err.error}`);
+          const errData = await res
+            .json()
+            .catch(() => ({ error: "Failed to parse error response" }));
+          console.error(
+            `[${requestId}] Context: API Play Error (${res.status}):`,
+            errData
+          );
+          // Handle specific errors like NO_ACTIVE_DEVICE if they still occur
+          if (errData.reason === "NO_ACTIVE_DEVICE" || res.status === 404) {
+            alert(
+              "Spotify reported no active device. Please ensure Spotify is running and active."
+            );
+            mutateDevices(); // Refresh device list
+          } else {
+            alert(`Playback failed: ${errData.error || "Unknown API error"}`);
+          }
         } else {
-          console.log("Play context OK");
+          console.log(
+            `[${requestId}] Context: API Play request successful (204)`
+          );
           setTimeout(() => {
+            console.log(
+              `[${requestId}] Context: Mutating playback state after API success.`
+            );
             mutatePlayback();
-          }, 750);
+          }, 750); // Keep delay
         }
       } catch (error) {
-        console.error("Play Context Network Err:", error);
-        alert("Network error playing context.");
+        console.error(
+          `[${requestId}] Context: Network error during play request:`,
+          error
+        );
+        alert("Network error starting playback. Please check your connection.");
       }
     },
     [
@@ -357,8 +472,63 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
       sdkDeviceId,
       globalPlaybackState,
       mutatePlayback,
-      transferPlayback,
+      mutateDevices, // Add mutateDevices dependency
+      // transferPlayback removed from dependencies
     ]
+  );
+
+  // --- Set Volume Control ---
+  const setVolume = useCallback(
+    async (volumePercent: number) => {
+      // Validate percentage
+      const clampedPercent = Math.max(
+        0,
+        Math.min(100, Math.round(volumePercent))
+      );
+      console.log(`Context: Setting volume to ${clampedPercent}%`);
+
+      // Optimistically update local state if needed (or rely on SWR refresh)
+      // mutatePlayback((currentData) => {
+      //   if (!currentData?.device) return currentData;
+      //   return { ...currentData, device: { ...currentData.device, volume_percent: clampedPercent } };
+      // }, false); // false = don't revalidate yet
+
+      try {
+        const res = await fetch("/api/spotify/volume", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ volume_percent: clampedPercent }),
+        });
+
+        if (!res.ok) {
+          const errData = await res
+            .json()
+            .catch(() => ({ error: "Failed to parse error" }));
+          console.error(
+            `Context: API Set Volume Error (${res.status}):`,
+            errData
+          );
+          // Revert optimistic update on failure if implemented
+          // mutatePlayback(); // Trigger revalidation to get actual state
+          alert(
+            `Failed to set volume: ${errData.error || "Unknown API error"}`
+          );
+        } else {
+          console.log("Context: Set volume API call successful");
+          // Trigger SWR revalidation after a short delay to get updated state
+          setTimeout(() => {
+            console.log("Context: Mutating playback state after volume change");
+            mutatePlayback();
+          }, 500);
+        }
+      } catch (error) {
+        console.error("Context: Network error setting volume:", error);
+        // Revert optimistic update on failure if implemented
+        // mutatePlayback(); // Trigger revalidation to get actual state
+        alert("Network error setting volume.");
+      }
+    },
+    [mutatePlayback] // Add dependencies as needed
   );
 
   // --- Context Value ---
@@ -369,6 +539,7 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
       sdkDeviceId,
       sdkPlayerState,
       globalPlaybackState,
+      localProgress,
       devices,
       isTransferring,
       playbackError,
@@ -381,6 +552,7 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
       seek,
       transferPlayback,
       playContext,
+      setVolume,
     },
     mutatePlayback,
     mutateDevices,

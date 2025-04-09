@@ -14,6 +14,9 @@ import {
   Loader2,
   Laptop,
   Podcast,
+  Volume1,
+  Volume,
+  VolumeX,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -38,15 +41,9 @@ import {
 } from "@/components/ui/dialog";
 import { usePlayer } from "@/context/PlayerContext";
 import type { Spotify } from "@/types/spotify-sdk";
-
-// Helper Functions (Keep or move to utils)
-function formatDuration(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined) return "0:00";
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes + ":" + (seconds < 10 ? "0" : "") + seconds;
-}
+import { Slider } from "@/components/ui/slider";
+import { formatDuration } from "@/lib/utils";
+import NowPlayingScreen from "./NowPlayingScreen";
 
 function getDeviceIcon(
   deviceType: string | undefined,
@@ -74,6 +71,7 @@ export default function PlayerFooter() {
     sdkDeviceId,
     sdkPlayerState,
     globalPlaybackState,
+    localProgress,
     devices,
     isTransferring,
     playbackError,
@@ -102,75 +100,35 @@ export default function PlayerFooter() {
   const effectiveDurationMs = useSdkState
     ? sdkPlayerState?.duration ?? 0
     : globalPlaybackState?.item?.duration_ms ?? 0;
+  const effectiveTrackUri = effectiveTrack?.uri;
 
-  // --- Progress Calculation ---
-  const [liveProgressMs, setLiveProgressMs] = useState<number>(0);
+  // --- Use localProgress from context rather than calculating our own ---
+  // This ensures consistent progress display across components
+  const effectiveProgressMs =
+    localProgress ??
+    (useSdkState
+      ? sdkPlayerState?.position ?? 0
+      : globalPlaybackState?.progress_ms ?? 0);
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-
-    if (useSdkState && effectiveIsPlaying) {
-      // Use SDK's initial position and update locally
-      setLiveProgressMs(sdkPlayerState?.position ?? 0);
-      interval = setInterval(() => {
-        setLiveProgressMs((prev) => {
-          const next = prev + 1000;
-          // Prevent exceeding duration
-          return effectiveDurationMs > 0
-            ? Math.min(next, effectiveDurationMs)
-            : next;
-        });
-      }, 1000);
-    } else if (globalPlaybackState?.is_playing) {
-      // Use global state's progress and estimate locally between polls
-      const initialProgress = globalPlaybackState.progress_ms ?? 0;
-      const timestamp = globalPlaybackState.timestamp ?? Date.now();
-      setLiveProgressMs(initialProgress + (Date.now() - timestamp)); // Estimate current progress
-
-      interval = setInterval(() => {
-        setLiveProgressMs((prev) => {
-          const estimatedTimestamp =
-            globalPlaybackState.timestamp ?? Date.now(); // Use latest timestamp if available
-          const estimatedInitial = globalPlaybackState.progress_ms ?? prev; // Use latest progress if available, else continue from prev
-          const next = estimatedInitial + (Date.now() - estimatedTimestamp);
-          // Prevent exceeding duration
-          return effectiveDurationMs > 0
-            ? Math.min(next, effectiveDurationMs)
-            : next;
-        });
-      }, 1000);
-    } else {
-      // Use static progress if paused
-      setLiveProgressMs(
-        useSdkState
-          ? sdkPlayerState?.position ?? 0
-          : globalPlaybackState?.progress_ms ?? 0
-      );
-    }
-
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-    // Re-run effect when the primary state source or playing status changes
-  }, [
-    useSdkState,
-    effectiveIsPlaying,
-    sdkPlayerState?.position,
-    globalPlaybackState?.progress_ms,
-    globalPlaybackState?.timestamp,
-    effectiveDurationMs,
-  ]);
-
-  const effectiveProgressMs = liveProgressMs;
   const effectiveProgressPercent =
     effectiveDurationMs > 0
       ? (effectiveProgressMs / effectiveDurationMs) * 100
       : 0;
 
+  // --- Component State (Hooks must be called before conditional returns) ---
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [isArtEnlarged, setIsArtEnlarged] = useState(false);
   const progressContainerRef = useRef<HTMLDivElement>(null);
+  const [volumePopoverOpen, setVolumePopoverOpen] = useState(false);
+  const [isNowPlayingOpen, setIsNowPlayingOpen] = useState(false);
 
+  // --- Check if anything is playable ---
+  if (!effectiveTrack) {
+    // Render nothing or a minimal placeholder if nothing is loaded
+    return null; // Don't show the footer
+  }
+
+  // Now it's safe to use component state and refs
   const currentDevice = globalPlaybackState?.device;
   const displayState = sdkIsActiveGlobally ? sdkPlayerState : null;
   const fallbackState = globalPlaybackState;
@@ -182,6 +140,8 @@ export default function PlayerFooter() {
       !sdkIsActiveGlobally
     )
       return;
+
+    event.stopPropagation();
 
     const rect = progressContainerRef.current.getBoundingClientRect();
     const clickX = event.clientX - rect.left;
@@ -230,28 +190,27 @@ export default function PlayerFooter() {
   }
 
   return (
-    <Dialog open={isArtEnlarged} onOpenChange={setIsArtEnlarged}>
-      <footer className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white grid grid-cols-3 items-center px-4 sm:px-6 md:px-8 gap-4">
-        <div className="flex items-center space-x-3 min-w-0">
+    <>
+      <footer
+        className="fixed bottom-4 left-4 right-4 z-50 h-16 md:h-20 bg-neutral-900/80 backdrop-blur-lg rounded-xl shadow-2xl text-white flex items-center justify-between md:grid md:grid-cols-3 px-4 sm:px-6 md:px-8 gap-4 cursor-pointer md:cursor-default md:pointer-events-none"
+        onClick={() => setIsNowPlayingOpen(true)}
+      >
+        <div className="flex items-center space-x-3 min-w-0 md:pointer-events-auto">
           {effectiveTrack &&
             "album" in effectiveTrack &&
             effectiveTrack.album?.images?.[0]?.url && (
-              <DialogTrigger asChild>
-                <button className="flex-shrink-0 focus:outline-none rounded">
-                  <Image
-                    src={effectiveTrack.album.images[0].url}
-                    alt={effectiveTrack.album.name ?? "Album art"}
-                    width={64}
-                    height={64}
-                    className="w-14 h-14 md:w-16 md:h-16 rounded hidden sm:block cursor-pointer hover:scale-105 transition-transform"
-                    unoptimized
-                  />
-                </button>
-              </DialogTrigger>
+              <Image
+                src={effectiveTrack.album.images[0].url}
+                alt={effectiveTrack.album.name ?? "Album art"}
+                width={48}
+                height={48}
+                className="flex-shrink-0 w-12 h-12 rounded cursor-pointer hover:scale-105 transition-transform md:w-16 md:h-16"
+                unoptimized
+              />
             )}
           {effectiveTrack && "show" in effectiveTrack && (
-            <div className="flex-shrink-0 w-14 h-14 md:w-16 md:h-16 rounded bg-muted hidden sm:flex items-center justify-center">
-              <Podcast size={32} className="text-muted-foreground" />
+            <div className="flex-shrink-0 w-12 h-12 rounded bg-muted flex items-center justify-center md:w-16 md:h-16">
+              <Podcast size={24} className="text-muted-foreground md:size-32" />
             </div>
           )}
           <div className="overflow-hidden">
@@ -270,13 +229,16 @@ export default function PlayerFooter() {
           </div>
         </div>
 
-        <div className="flex flex-col items-center">
+        <div className="hidden md:flex flex-col items-center md:pointer-events-auto">
           <div className="flex items-center space-x-2 sm:space-x-4 mb-1">
             <Button
               variant="ghost"
               size="icon"
               title="Previous"
-              onClick={controls.previousTrack}
+              onClick={(e) => {
+                e.stopPropagation();
+                controls.previousTrack();
+              }}
               disabled={!sdkIsActiveGlobally}
               className="text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -286,7 +248,10 @@ export default function PlayerFooter() {
               variant="ghost"
               size="icon"
               title={effectiveIsPlaying ? "Pause" : "Play"}
-              onClick={controls.togglePlay}
+              onClick={(e) => {
+                e.stopPropagation();
+                controls.togglePlay();
+              }}
               disabled={!sdkIsActiveGlobally}
               className="bg-white text-black rounded-full w-8 h-8 flex items-center justify-center hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -300,7 +265,10 @@ export default function PlayerFooter() {
               variant="ghost"
               size="icon"
               title="Next"
-              onClick={controls.nextTrack}
+              onClick={(e) => {
+                e.stopPropagation();
+                controls.nextTrack();
+              }}
               disabled={!sdkIsActiveGlobally}
               className="text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -320,7 +288,6 @@ export default function PlayerFooter() {
             </span>
             <Progress
               value={effectiveProgressPercent}
-              key={`${effectiveTrack?.id}-${effectiveProgressMs}`}
               className="w-full h-1 bg-gray-700 [&>div]:bg-white group-hover:[&>div]:bg-green-500"
             />
             <span className="text-[11px] text-gray-400 w-9 text-left tabular-nums">
@@ -329,147 +296,184 @@ export default function PlayerFooter() {
           </div>
         </div>
 
-        <div className="flex items-center justify-end space-x-2 sm:space-x-3">
-          <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="text-gray-400 hover:text-white data-[state=open]:text-green-500 cursor-pointer"
-                title="Device"
-                onClick={mutateDevices}
-              >
-                {getDeviceIcon(
-                  currentDevice?.type,
-                  currentDevice?.is_active,
-                  sdkIsActiveGlobally
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-60 p-0 mb-2" align="end">
-              <Command>
-                <CommandInput placeholder="Select device..." />
-                <CommandList>
-                  <CommandEmpty>
-                    {devicesError ? (
-                      <span className="text-red-500 text-xs px-4 py-2">
-                        Error
-                      </span>
-                    ) : devices === undefined ? (
-                      <Loader2 className="animate-spin mx-auto" />
-                    ) : (
-                      "No devices"
-                    )}
-                  </CommandEmpty>
-                  {playerState.isSdkReady && sdkDeviceId && (
-                    <CommandGroup heading="This Browser">
-                      <CommandItem
-                        key={sdkDeviceId}
-                        onSelect={() => handleTransferClick(sdkDeviceId)}
-                        disabled={isTransferring || sdkIsActiveGlobally}
-                        className={`cursor-pointer ${
-                          sdkIsActiveGlobally ? "opacity-70" : ""
-                        }`}
-                      >
-                        <Laptop
-                          size={18}
-                          className={
-                            sdkIsActiveGlobally ? "text-green-500" : ""
-                          }
-                        />
-                        <span className="ml-2">Web Player</span>
-                        {sdkIsActiveGlobally && (
-                          <span className="text-xs ml-auto text-green-500">
-                            Active
-                          </span>
-                        )}
-                        {isTransferring && (
-                          <Loader2 className="animate-spin ml-auto" />
-                        )}
-                      </CommandItem>
-                    </CommandGroup>
-                  )}
-                  {devices &&
-                    devices.filter((d) => d.id !== sdkDeviceId).length > 0 && (
-                      <CommandGroup heading="Other Devices">
-                        {devices
-                          .filter((d) => d.id !== sdkDeviceId)
-                          .map((d) => (
-                            <CommandItem
-                              key={d.id}
-                              onSelect={() => handleTransferClick(d.id!)}
-                              disabled={isTransferring || d.is_active}
-                              className={`cursor-pointer ${
-                                d.is_active ? "opacity-70" : ""
-                              }`}
-                            >
-                              {getDeviceIcon(d.type, d.is_active)}
-                              <span className="ml-2">{d.name}</span>
-                              {d.is_active && (
-                                <span className="text-xs ml-auto text-green-500">
-                                  Active
-                                </span>
-                              )}
-                              {isTransferring && (
-                                <Loader2 className="animate-spin ml-auto" />
-                              )}
-                            </CommandItem>
-                          ))}
-                      </CommandGroup>
-                    )}
-                </CommandList>
-              </Command>
-            </PopoverContent>
-          </Popover>
-          <div className="flex items-center space-x-1 group">
+        <div className="flex items-center justify-end space-x-2 sm:space-x-3 md:pointer-events-auto">
+          <div className="flex items-center space-x-1 md:hidden">
             <Button
               variant="ghost"
               size="icon"
-              className="text-gray-400 cursor-pointer"
-              title="Volume"
+              title={effectiveIsPlaying ? "Pause" : "Play"}
+              onClick={(e) => {
+                e.stopPropagation();
+                controls.togglePlay();
+              }}
+              disabled={!sdkIsActiveGlobally}
+              className="bg-white text-black rounded-full w-8 h-8 flex items-center justify-center hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Volume2 size={20} />
+              {effectiveIsPlaying ? (
+                <Pause size={16} fill="currentColor" />
+              ) : (
+                <Play size={16} fill="currentColor" className="ml-[2px]" />
+              )}
             </Button>
-            <div
-              className="w-16 sm:w-20 h-1 bg-gray-600 rounded-full cursor-pointer"
-              title="Volume"
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Next"
+              onClick={(e) => {
+                e.stopPropagation();
+                controls.nextTrack();
+              }}
+              disabled={!sdkIsActiveGlobally}
+              className="text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <div
-                className="bg-white h-1 rounded-full group-hover:bg-green-500"
-                style={{ width: `${currentDevice?.volume_percent ?? 100}%` }}
-              ></div>
-            </div>
+              <SkipForward size={18} fill="currentColor" />
+            </Button>
+          </div>
+          <div className="hidden md:flex items-center space-x-2 sm:space-x-3">
+            <Popover
+              open={volumePopoverOpen}
+              onOpenChange={setVolumePopoverOpen}
+            >
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-gray-400 hover:text-white"
+                  title="Volume"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {(currentDevice?.volume_percent ?? 0) > 66 ? (
+                    <Volume2 size={18} />
+                  ) : (currentDevice?.volume_percent ?? 0) > 33 ? (
+                    <Volume1 size={18} />
+                  ) : (currentDevice?.volume_percent ?? 0) > 0 ? (
+                    <Volume size={18} />
+                  ) : (
+                    <VolumeX size={18} />
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                side="top"
+                align="center"
+                className="w-auto p-2 mb-2 h-32"
+              >
+                <Slider
+                  orientation="vertical"
+                  defaultValue={[currentDevice?.volume_percent ?? 0]}
+                  max={100}
+                  step={1}
+                  className="h-full data-[orientation=vertical]:w-2"
+                  onValueCommit={(value: number[]) =>
+                    controls.setVolume(value[0])
+                  }
+                />
+              </PopoverContent>
+            </Popover>
+            <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-gray-400 hover:text-white data-[state=open]:text-green-500 cursor-pointer"
+                  title="Device"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    mutateDevices();
+                  }}
+                >
+                  {getDeviceIcon(
+                    currentDevice?.type,
+                    currentDevice?.is_active,
+                    sdkIsActiveGlobally
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-60 p-0 mb-2" align="end">
+                <Command>
+                  <CommandInput placeholder="Select device..." />
+                  <CommandList>
+                    <CommandEmpty>
+                      {devicesError ? (
+                        <span className="text-red-500 text-xs px-4 py-2">
+                          Error
+                        </span>
+                      ) : devices === undefined ? (
+                        <Loader2 className="animate-spin mx-auto" />
+                      ) : (
+                        "No devices"
+                      )}
+                    </CommandEmpty>
+                    {playerState.isSdkReady && sdkDeviceId && (
+                      <CommandGroup heading="This Browser">
+                        <CommandItem
+                          key={sdkDeviceId}
+                          onSelect={() => handleTransferClick(sdkDeviceId)}
+                          disabled={isTransferring || sdkIsActiveGlobally}
+                          className={`cursor-pointer ${
+                            sdkIsActiveGlobally ? "opacity-70" : ""
+                          }`}
+                        >
+                          <Laptop
+                            size={18}
+                            className={
+                              sdkIsActiveGlobally ? "text-green-500" : ""
+                            }
+                          />
+                          <span className="ml-2">Web Player</span>
+                          {sdkIsActiveGlobally && (
+                            <span className="text-xs ml-auto text-green-500">
+                              Active
+                            </span>
+                          )}
+                          {isTransferring && (
+                            <Loader2 className="animate-spin ml-auto" />
+                          )}
+                        </CommandItem>
+                      </CommandGroup>
+                    )}
+                    {devices &&
+                      Array.isArray(devices) &&
+                      devices.filter((d) => d.id !== sdkDeviceId).length >
+                        0 && (
+                        <CommandGroup heading="Other Devices">
+                          {devices
+                            .filter((d) => d.id !== sdkDeviceId)
+                            .map((d) => (
+                              <CommandItem
+                                key={d.id}
+                                onSelect={() => handleTransferClick(d.id!)}
+                                disabled={isTransferring || d.is_active}
+                                className={`cursor-pointer ${
+                                  d.is_active ? "opacity-70" : ""
+                                }`}
+                              >
+                                {getDeviceIcon(d.type, d.is_active)}
+                                <span className="ml-2">{d.name}</span>
+                                {d.is_active && (
+                                  <span className="text-xs ml-auto text-green-500">
+                                    Active
+                                  </span>
+                                )}
+                                {isTransferring && (
+                                  <Loader2 className="animate-spin ml-auto" />
+                                )}
+                              </CommandItem>
+                            ))}
+                        </CommandGroup>
+                      )}
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
       </footer>
 
-      <DialogContent
-        className="max-w-md p-0 bg-transparent border-none shadow-none"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-      >
-        <DialogTitle className="sr-only">
-          {effectiveTrack && "album" in effectiveTrack
-            ? `Album Art: ${effectiveTrack.album.name ?? ""}`
-            : effectiveTrack?.name ?? "Media Artwork"}
-        </DialogTitle>
-        {effectiveTrack &&
-          "album" in effectiveTrack &&
-          effectiveTrack.album?.images?.[0]?.url && (
-            <Image
-              src={effectiveTrack.album.images[0].url}
-              alt={effectiveTrack.album.name ?? "Album art enlarged"}
-              width={500}
-              height={500}
-              className="w-full h-auto rounded-lg"
-              unoptimized
-            />
-          )}
-        {effectiveTrack && "show" in effectiveTrack && (
-          <div className="w-full aspect-square bg-muted rounded-lg flex items-center justify-center">
-            <Podcast size={128} className="text-muted-foreground" />
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+      <NowPlayingScreen
+        isOpen={isNowPlayingOpen}
+        close={() => setIsNowPlayingOpen(false)}
+      />
+    </>
   );
 }

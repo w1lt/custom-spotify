@@ -10,21 +10,20 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const { contextUri, uris, offset, deviceId } = await request.json();
-  // Determine active device ID - ideally passed from client, or fetch here
-  // For now, let's assume playback on the currently active device (if any)
-  // let deviceId = undefined; // Or fetch active device
+  // Destructure using snake_case matching the frontend payload
+  const { context_uri, uris, offset, device_id } = await request.json();
 
-  // Validation: Need either contextUri or uris
-  if (!contextUri && (!uris || !Array.isArray(uris) || uris.length === 0)) {
+  // Validation: Need either context_uri or uris
+  if (!context_uri && (!uris || !Array.isArray(uris) || uris.length === 0)) {
     return NextResponse.json(
-      { error: "Requires contextUri or uris" },
+      { error: "Requires context_uri or uris" }, // Error message reflects backend variable now
       { status: 400 }
     );
   }
-  if (contextUri && uris) {
+  // Validation: Cannot provide both
+  if (context_uri && uris) {
     return NextResponse.json(
-      { error: "Cannot provide both contextUri and uris" },
+      { error: "Cannot provide both context_uri and uris" }, // Error message reflects backend variable
       { status: 400 }
     );
   }
@@ -33,21 +32,23 @@ export async function PUT(request: NextRequest) {
     accessToken: session.user.accessToken,
   });
 
-  // Construct payload based on input
+  // Construct payload for Spotify API using their expected keys (snake_case)
   const payload: any = {};
-  if (contextUri) {
-    payload.context_uri = contextUri;
+  if (context_uri) {
+    payload.context_uri = context_uri;
     if (offset !== undefined) {
-      payload.offset = offset; // e.g., { position: 5 } or { uri: "spotify:track:..." }
+      // Ensure offset keys are also snake_case if needed by the library/API
+      // Assuming the library handles offset structure correctly
+      payload.offset = offset;
     }
   } else if (uris) {
     payload.uris = uris;
-    // Offset can also be used with URIs, but typically it's simpler to just order the URIs array
+    // Offset is generally not used with uris array
   }
 
-  // Add device_id if it was provided in the request body
-  if (deviceId) {
-    payload.device_id = deviceId;
+  // Add device_id if it was provided
+  if (device_id) {
+    payload.device_id = device_id;
   }
 
   try {
