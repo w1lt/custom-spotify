@@ -18,7 +18,6 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress"; // <-- Add this
 import { formatDuration } from "@/lib/utils"; // Assuming you have this helper
 import type { Spotify } from "@/types/spotify-sdk";
-import { usePalette } from "color-thief-react";
 
 interface NowPlayingScreenProps {
   isOpen: boolean;
@@ -234,14 +233,20 @@ export default function NowPlayingScreen({
 
   // We can remove the custom progress tracking since we now use the shared localProgress from context
   const progressContainerRef = useRef<HTMLDivElement>(null); // <-- Keep this for Progress container
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragProgress, setDragProgress] = useState<number | null>(null);
 
   // Calculate progress percentage for Progress component
   const effectiveProgressPercent =
     effectiveDurationMs > 0
-      ? (effectiveProgressMs / effectiveDurationMs) * 100
+      ? ((isDragging && dragProgress !== null
+          ? dragProgress
+          : effectiveProgressMs) /
+          effectiveDurationMs) *
+        100
       : 0;
 
-  // Add handleProgressClick logic for seeking
+  // Handle progress drag and click operations
   const handleProgressClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (
       !progressContainerRef.current ||
@@ -269,6 +274,100 @@ export default function NowPlayingScreen({
     controls.seek(seekPositionMs);
   };
 
+  // Handle drag start
+  const handleDragStart = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!sdkIsActiveGlobally || effectiveDurationMs <= 0) return;
+
+    setIsDragging(true);
+    handleDragMove(event);
+
+    // Add document-level event listeners
+    document.addEventListener("mousemove", handleDragMove);
+    document.addEventListener("mouseup", handleDragEnd);
+  };
+
+  // Handle touch start
+  const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (!sdkIsActiveGlobally || effectiveDurationMs <= 0) return;
+
+    setIsDragging(true);
+    handleTouchMove(event);
+
+    // Add document-level event listeners
+    document.addEventListener("touchmove", handleTouchMove, { passive: false });
+    document.addEventListener("touchend", handleTouchEnd);
+  };
+
+  // Handle drag move
+  const handleDragMove = (event: MouseEvent | React.MouseEvent) => {
+    if (!progressContainerRef.current || !isDragging) return;
+
+    const rect = progressContainerRef.current.getBoundingClientRect();
+    const moveX = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
+    const percentage = moveX / rect.width;
+    const newPositionMs = Math.floor(percentage * effectiveDurationMs);
+
+    setDragProgress(newPositionMs);
+  };
+
+  // Handle touch move
+  const handleTouchMove = (event: TouchEvent | React.TouchEvent) => {
+    if (!progressContainerRef.current || !isDragging) return;
+
+    // Prevent page scrolling while dragging
+    event.preventDefault();
+
+    const touch = event.touches[0];
+    const rect = progressContainerRef.current.getBoundingClientRect();
+    const moveX = Math.max(0, Math.min(touch.clientX - rect.left, rect.width));
+    const percentage = moveX / rect.width;
+    const newPositionMs = Math.floor(percentage * effectiveDurationMs);
+
+    setDragProgress(newPositionMs);
+  };
+
+  // Handle drag end
+  const handleDragEnd = () => {
+    // Always remove event listeners first
+    document.removeEventListener("mousemove", handleDragMove);
+    document.removeEventListener("mouseup", handleDragEnd);
+
+    // Then seek if dragging was happening
+    if (isDragging && dragProgress !== null && sdkIsActiveGlobally) {
+      controls.seek(dragProgress);
+    }
+
+    // Finally update state
+    setIsDragging(false);
+    setDragProgress(null);
+  };
+
+  // Handle touch end
+  const handleTouchEnd = () => {
+    // Always remove event listeners first
+    document.removeEventListener("touchmove", handleTouchMove);
+    document.removeEventListener("touchend", handleTouchEnd);
+
+    // Then seek if dragging was happening
+    if (isDragging && dragProgress !== null && sdkIsActiveGlobally) {
+      controls.seek(dragProgress);
+    }
+
+    // Finally update state
+    setIsDragging(false);
+    setDragProgress(null);
+  };
+
+  // Clean up event listeners when component unmounts
+  useEffect(() => {
+    return () => {
+      document.removeEventListener("mousemove", handleDragMove);
+      document.removeEventListener("mouseup", handleDragEnd);
+      document.removeEventListener("touchmove", handleTouchMove);
+      document.removeEventListener("touchend", handleTouchEnd);
+    };
+  }, []);
+
   // Use type guards for accessing track/show specific properties
   const albumArtUrl =
     effectiveTrack && "album" in effectiveTrack
@@ -287,47 +386,6 @@ export default function NowPlayingScreen({
       ? effectiveTrack.show?.name
       : null;
 
-  // Use color-thief-react to extract dominant colors from the album art
-  const { data: palette } = usePalette(
-    albumArtUrl || showArtUrl || "",
-    3,
-    "hex",
-    {
-      crossOrigin: "anonymous",
-      quality: 10,
-    }
-  );
-
-  // Helper function to convert hex to rgba
-  const hexToRgba = (hex: string, alpha: number) => {
-    // Remove # if present
-    hex = hex.replace("#", "");
-
-    // Parse the hex values to RGB
-    const r = parseInt(hex.substring(0, 2), 16);
-    const g = parseInt(hex.substring(2, 4), 16);
-    const b = parseInt(hex.substring(4, 6), 16);
-
-    // Return rgba string
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-  };
-
-  // Set fallback colors for gradient if palette not available
-  const colorPrimary = palette?.[0] || "#1e1e1e";
-  const colorSecondary = palette?.[1] || "#121212";
-
-  // Create gradient background style with proper color formatting using rgba
-  const backgroundStyle = palette
-    ? {
-        background: `linear-gradient(to bottom, ${hexToRgba(
-          colorPrimary,
-          1.0
-        )}, ${hexToRgba(colorSecondary, 0.9)}, #121212)`,
-      }
-    : {
-        background: "linear-gradient(to bottom, #1e1e1e, #171717, #121212)",
-      };
-
   // Determine animation class based on isOpen state
   const animationClass = isOpen
     ? "translate-y-0 opacity-100"
@@ -335,8 +393,7 @@ export default function NowPlayingScreen({
 
   return (
     <div
-      className={`fixed inset-0 z-[100] text-white flex flex-col items-center transition-all duration-500 ease-in-out ${animationClass} overflow-hidden`}
-      style={backgroundStyle}
+      className={`fixed inset-0 z-[100] text-white flex flex-col items-center transition-all duration-500 ease-in-out ${animationClass} overflow-hidden bg-black`}
     >
       {/* Top Bar (Close Button) */}
       <div className="w-full flex justify-end p-4 sticky top-0 z-10 bg-gradient-to-b from-black/20 to-transparent">
@@ -422,17 +479,36 @@ export default function NowPlayingScreen({
             ref={progressContainerRef}
             className={`w-full mb-4 group ${
               sdkIsActiveGlobally ? "cursor-pointer" : "cursor-default"
-            }`}
+            } relative`}
             title={sdkIsActiveGlobally ? "Seek" : ""}
-            onClick={handleProgressClick}
+            onClick={isDragging ? undefined : handleProgressClick}
+            onMouseDown={handleDragStart}
+            onTouchStart={handleTouchStart}
           >
             <Progress
               value={effectiveProgressPercent}
-              className="w-full h-1.5 bg-gray-700 [&>div]:bg-white group-hover:[&>div]:bg-green-500 mb-1"
+              className={`w-full h-1.5 bg-gray-700 [&>div]:bg-white group-hover:[&>div]:bg-green-500 mb-1 ${
+                isDragging ? "[&>div]:bg-green-500" : ""
+              }`}
               aria-label="Seek progress bar"
             />
+            {/* Drag handle indicator */}
+            {isDragging && dragProgress !== null && (
+              <div
+                className="absolute h-4 w-4 bg-green-500 rounded-full -top-1 transform -translate-x-1/2 shadow-lg"
+                style={{
+                  left: `${(dragProgress / effectiveDurationMs) * 100}%`,
+                }}
+              />
+            )}
             <div className="flex justify-between text-xs text-neutral-400">
-              <span>{formatDuration(effectiveProgressMs)}</span>
+              <span>
+                {formatDuration(
+                  isDragging && dragProgress !== null
+                    ? dragProgress
+                    : effectiveProgressMs
+                )}
+              </span>
               <span>{formatDuration(effectiveDurationMs)}</span>
             </div>
           </div>
