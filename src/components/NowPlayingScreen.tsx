@@ -35,7 +35,114 @@ export default function NowPlayingScreen({
     sdkPlayerState,
     globalPlaybackState,
     localProgress,
+    rotationAngle,
   } = playerState;
+
+  // Add ref for the album image rotation
+  const albumImageRef = useRef<HTMLImageElement>(null);
+  // Add ref to track animation state
+  const animationStateRef = useRef({
+    startAngle: rotationAngle,
+    startTime: 0,
+    currentAngle: rotationAngle,
+  });
+
+  // Add listener for our custom rotation event
+  useEffect(() => {
+    const handleRotationEvent = (
+      event: CustomEvent<{
+        isPlaying: boolean;
+        timestamp: number;
+        currentAngle: number;
+      }>
+    ) => {
+      const { isPlaying, timestamp, currentAngle } = event.detail;
+
+      if (!albumImageRef.current) return;
+
+      if (isPlaying) {
+        // Starting or resuming playback
+        // Use the angle from context if available, otherwise use our tracked angle
+        animationStateRef.current.currentAngle =
+          currentAngle || animationStateRef.current.currentAngle;
+        animationStateRef.current.startAngle =
+          animationStateRef.current.currentAngle;
+        animationStateRef.current.startTime = timestamp;
+
+        // Dynamically create animation starting from exact current angle
+        updateRotationAnimation(animationStateRef.current.currentAngle);
+
+        // Apply animation
+        albumImageRef.current.style.animation =
+          "album-rotate 20s linear infinite";
+        albumImageRef.current.style.transform = `rotate(${animationStateRef.current.currentAngle}deg)`;
+      } else {
+        // Pausing playback - calculate and save exact current angle
+        if (animationStateRef.current.startTime > 0) {
+          const elapsedMs = timestamp - animationStateRef.current.startTime;
+          const degreesPerMs = 360 / (20 * 1000); // 360° every 20 seconds
+          const rotationDelta = (elapsedMs * degreesPerMs) % 360;
+
+          // Save the precise current angle for when we resume
+          animationStateRef.current.currentAngle =
+            (animationStateRef.current.startAngle + rotationDelta) % 360;
+
+          // Stop animation but set transform to exact current angle
+          albumImageRef.current.style.animation = "none";
+          albumImageRef.current.style.transform = `rotate(${animationStateRef.current.currentAngle}deg)`;
+        }
+      }
+    };
+
+    // TypeScript type assertion for CustomEvent
+    window.addEventListener(
+      "album-rotation",
+      handleRotationEvent as EventListener
+    );
+
+    return () => {
+      window.removeEventListener(
+        "album-rotation",
+        handleRotationEvent as EventListener
+      );
+    };
+  }, []);
+
+  // Function to update the keyframes animation
+  const updateRotationAnimation = (startAngle: number) => {
+    // Remove old style if exists
+    const oldStyle = document.getElementById("album-rotation-style");
+    if (oldStyle) {
+      oldStyle.remove();
+    }
+
+    // Create new keyframes starting from current angle
+    const styleElement = document.createElement("style");
+    styleElement.id = "album-rotation-style";
+    styleElement.textContent = `
+      @keyframes album-rotate {
+        from { transform: rotate(${startAngle}deg); }
+        to { transform: rotate(${startAngle + 360}deg); }
+      }
+    `;
+    document.head.appendChild(styleElement);
+  };
+
+  // Initial animation setup
+  useEffect(() => {
+    // Initialize the animation
+    updateRotationAnimation(rotationAngle);
+
+    // Set the initial reference angle
+    animationStateRef.current.currentAngle = rotationAngle;
+
+    return () => {
+      const styleElement = document.getElementById("album-rotation-style");
+      if (styleElement) {
+        styleElement.remove();
+      }
+    };
+  }, []);
 
   // Determine effective state (copied logic from PlayerFooter for consistency)
   const sdkIsActiveGlobally = Boolean(
@@ -129,56 +236,55 @@ export default function NowPlayingScreen({
 
   return (
     <div
-      className={`fixed inset-0 z-[100] bg-gradient-to-b from-neutral-800 to-neutral-900 text-white flex flex-col items-center p-6 transition-all duration-500 ease-in-out ${animationClass} overflow-hidden`}
+      className={`fixed inset-0 z-[100] bg-gradient-to-b from-neutral-800 to-neutral-900 text-white flex flex-col items-center transition-all duration-500 ease-in-out ${animationClass} overflow-hidden`}
     >
       {/* Top Bar (Close Button) */}
-      <div className="w-full flex justify-end flex-shrink-0">
+      <div className="w-full flex justify-end p-4">
         <Button variant="ghost" size="icon" onClick={close}>
           <ChevronDown size={24} />
         </Button>
       </div>
 
-      {/* Main Content Area - Allow this to grow and push controls down */}
-      <div className="flex flex-col items-center justify-center flex-grow w-full max-w-md pt-8 pb-4 min-h-0">
-        {/* Album Art / Show Art */}
-        <div className="mb-8 w-64 h-64 md:w-80 md:h-80 relative">
+      {/* Main Content Area with album art centered */}
+      <div className="flex flex-col items-center justify-center flex-grow w-full px-4 max-w-xl">
+        {/* Album Art / Show Art - centered and larger on mobile */}
+        <div className="aspect-square w-64 sm:w-72 md:w-80 lg:w-96 relative mb-6 sm:mb-8">
           {albumArtUrl ? (
             <Image
+              ref={albumImageRef}
               src={albumArtUrl}
               alt={albumName ?? "Album art"}
               fill
-              sizes="(max-width: 768px) 256px, 320px"
-              className={`object-cover rounded-full shadow-lg ${
-                effectiveIsPlaying ? "animate-spin-slow" : ""
-              }`}
+              sizes="(max-width: 640px) 256px, (max-width: 768px) 288px, (max-width: 1024px) 320px, 384px"
+              className="object-cover rounded-full shadow-lg"
               style={{
-                animationPlayState: effectiveIsPlaying ? "running" : "paused",
+                willChange: "transform",
               }}
-              priority // Prioritize loading the main image
+              priority
             />
           ) : showArtUrl ? (
             <Image
               src={showArtUrl}
               alt={showName ?? "Show art"}
               fill
-              sizes="(max-width: 768px) 256px, 320px"
-              className="object-cover rounded-lg shadow-lg" // Shows are square
+              sizes="(max-width: 640px) 256px, (max-width: 768px) 288px, (max-width: 1024px) 320px, 384px"
+              className="object-cover rounded-lg shadow-lg"
               priority
             />
           ) : (
             // Placeholder if no art
             <div className="w-full h-full rounded-full bg-muted flex items-center justify-center">
-              <Podcast size={128} className="text-muted-foreground" />
+              <Podcast size={96} className="text-muted-foreground" />
             </div>
           )}
         </div>
 
         {/* Track Info */}
-        <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold truncate max-w-sm">
+        <div className="text-center mb-6">
+          <h2 className="text-xl sm:text-2xl font-bold truncate max-w-sm">
             {effectiveTrack?.name ?? "--"}
           </h2>
-          <p className="text-lg text-neutral-400 truncate max-w-xs">
+          <p className="text-sm sm:text-lg text-neutral-400 truncate max-w-xs">
             {effectiveTrack && "artists" in effectiveTrack
               ? effectiveTrack.artists
                   ?.map((a: Spotify.Artist) => a.name)
@@ -188,75 +294,87 @@ export default function NowPlayingScreen({
               : "-"}
           </p>
         </div>
-
-        {/* Spacer to push progress/controls down */}
-        <div className="flex-grow"></div>
-
-        {/* Progress Bar (using Progress component) */}
-        <div
-          ref={progressContainerRef}
-          className={`w-full max-w-sm mb-6 flex-shrink-0 group ${
-            sdkIsActiveGlobally ? "cursor-pointer" : "cursor-default"
-          }`}
-          title={sdkIsActiveGlobally ? "Seek" : ""}
-          onClick={handleProgressClick}
-        >
-          <Progress
-            value={effectiveProgressPercent}
-            className="w-full h-1 bg-gray-700 [&>div]:bg-white group-hover:[&>div]:bg-green-500 mb-1"
-            aria-label="Seek progress bar"
-          />
-          <div className="flex justify-between text-xs text-neutral-400">
-            <span>{formatDuration(effectiveProgressMs)}</span>
-            <span>{formatDuration(effectiveDurationMs)}</span>
-          </div>
-        </div>
-
-        {/* Playback Controls */}
-        <div className="flex items-center justify-center space-x-6 w-full max-w-sm flex-shrink-0">
-          <Button variant="ghost" size="icon" className="text-neutral-400">
-            <Shuffle size={20} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={controls.previousTrack}
-            disabled={!sdkIsActiveGlobally}
-            className="text-white disabled:opacity-50"
-          >
-            <SkipBack size={28} fill="currentColor" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={controls.togglePlay}
-            disabled={!sdkIsActiveGlobally}
-            className="bg-white text-black rounded-full w-16 h-16 flex items-center justify-center hover:scale-105 disabled:opacity-50"
-          >
-            {effectiveIsPlaying ? (
-              <Pause size={28} fill="currentColor" />
-            ) : (
-              <Play size={28} fill="currentColor" className="ml-1" />
-            )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={controls.nextTrack}
-            disabled={!sdkIsActiveGlobally}
-            className="text-white disabled:opacity-50"
-          >
-            <SkipForward size={28} fill="currentColor" />
-          </Button>
-          <Button variant="ghost" size="icon" className="text-neutral-400">
-            <Repeat size={20} />
-          </Button>
-        </div>
       </div>
 
-      {/* Bottom Spacer/Area (Adjust as needed) */}
-      {/* <div className="h-10 flex-shrink-0"></div> */}
-      {/* Removed fixed bottom spacer, using flex-grow above */}
+      {/* Fixed bottom controls - no dark background */}
+      <div className="w-full p-4 sm:p-6">
+        <div className="max-w-xl mx-auto">
+          {/* Progress Bar */}
+          <div
+            ref={progressContainerRef}
+            className={`w-full mb-4 group ${
+              sdkIsActiveGlobally ? "cursor-pointer" : "cursor-default"
+            }`}
+            title={sdkIsActiveGlobally ? "Seek" : ""}
+            onClick={handleProgressClick}
+          >
+            <Progress
+              value={effectiveProgressPercent}
+              className="w-full h-1.5 bg-gray-700 [&>div]:bg-white group-hover:[&>div]:bg-green-500 mb-1"
+              aria-label="Seek progress bar"
+            />
+            <div className="flex justify-between text-xs text-neutral-400">
+              <span>{formatDuration(effectiveProgressMs)}</span>
+              <span>{formatDuration(effectiveDurationMs)}</span>
+            </div>
+          </div>
+
+          {/* Playback Controls - consistently sized */}
+          <div className="flex items-center justify-center space-x-5 w-full">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`${
+                (playerState.globalPlaybackState as any)?.shuffle_state
+                  ? "text-green-500"
+                  : "text-neutral-400"
+              } hover:text-white`}
+              onClick={controls.toggleShuffle}
+              disabled={!sdkIsActiveGlobally}
+            >
+              <Shuffle size={18} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={controls.previousTrack}
+              disabled={!sdkIsActiveGlobally}
+              className="text-white disabled:opacity-50"
+            >
+              <SkipBack size={20} fill="currentColor" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={controls.togglePlay}
+              disabled={!sdkIsActiveGlobally}
+              className="bg-white text-black rounded-full w-12 h-12 flex items-center justify-center hover:scale-105 disabled:opacity-50"
+            >
+              {effectiveIsPlaying ? (
+                <Pause size={22} fill="currentColor" />
+              ) : (
+                <Play size={22} fill="currentColor" className="ml-1" />
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={controls.nextTrack}
+              disabled={!sdkIsActiveGlobally}
+              className="text-white disabled:opacity-50"
+            >
+              <SkipForward size={20} fill="currentColor" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-neutral-400 hover:text-white"
+            >
+              <Repeat size={18} />
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

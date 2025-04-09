@@ -153,6 +153,12 @@ export default function PlayerFooter() {
       Math.floor(percentage * effectiveDurationMs)
     );
 
+    // Immediately update the local progress for UI responsiveness
+    // This will make the slider position update right away
+    if (controls.setLocalProgress) {
+      controls.setLocalProgress(seekPositionMs);
+    }
+
     controls.seek(seekPositionMs);
   };
 
@@ -202,14 +208,14 @@ export default function PlayerFooter() {
               <Image
                 src={effectiveTrack.album.images[0].url}
                 alt={effectiveTrack.album.name ?? "Album art"}
-                width={48}
-                height={48}
-                className="flex-shrink-0 w-12 h-12 rounded cursor-pointer hover:scale-105 transition-transform md:w-16 md:h-16"
+                width={64}
+                height={64}
+                className="flex-shrink-0 w-12 h-12 md:w-16 md:h-16 rounded-xl aspect-square object-cover cursor-pointer hover:scale-105 transition-transform"
                 unoptimized
               />
             )}
           {effectiveTrack && "show" in effectiveTrack && (
-            <div className="flex-shrink-0 w-12 h-12 rounded bg-muted flex items-center justify-center md:w-16 md:h-16">
+            <div className="flex-shrink-0 w-12 h-12 rounded-xl bg-muted flex items-center justify-center md:w-16 md:h-16">
               <Podcast size={24} className="text-muted-foreground md:size-32" />
             </div>
           )}
@@ -288,7 +294,7 @@ export default function PlayerFooter() {
             </span>
             <Progress
               value={effectiveProgressPercent}
-              className="w-full h-1 bg-gray-700 [&>div]:bg-white group-hover:[&>div]:bg-green-500"
+              className="w-full h-1.5 bg-gray-700 [&>div]:bg-white group-hover:[&>div]:bg-green-500 transition-all duration-100"
             />
             <span className="text-[11px] text-gray-400 w-9 text-left tabular-nums">
               {formatDuration(effectiveDurationMs)}

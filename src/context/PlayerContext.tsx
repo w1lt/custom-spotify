@@ -25,6 +25,7 @@ interface PlayerState {
   sdkPlayerState: SdkPlaybackState;
   globalPlaybackState: CurrentlyPlayingContext | null | undefined;
   localProgress: number | null;
+  rotationAngle: number;
   devices: SpotifyDevice[] | undefined;
   isTransferring: boolean;
   playbackError: any;
@@ -41,6 +42,9 @@ interface PlayerControls {
     offset?: { position?: number; uri?: string }
   ) => Promise<void>;
   setVolume: (volumePercent: number) => Promise<void>;
+  setLocalProgress: (positionMs: number) => void;
+  setRotationAngle: (angle: number) => void;
+  toggleShuffle: () => Promise<void>;
 }
 interface PlayerContextValue {
   playerState: PlayerState;
@@ -76,7 +80,9 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
   const [isTransferring, setIsTransferring] = useState(false);
   const [autoTransferAttempted, setAutoTransferAttempted] = useState(false);
   const [localProgress, setLocalProgress] = useState<number | null>(null);
+  const [rotationAngle, setRotationAngle] = useState<number>(0);
   const progressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const rotationTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastUpdateTimeRef = useRef<number>(0);
 
   // --- SWR Hooks ---
@@ -123,14 +129,33 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
       progressTimerRef.current = null;
     }
 
-    // Initialize local progress from API data when it changes
-    if (globalPlaybackState?.progress_ms !== undefined) {
-      setLocalProgress(globalPlaybackState.progress_ms);
+    // Determine if we're playing and should update progress
+    const sdkIsActiveDevice = globalPlaybackState?.device?.id === sdkDeviceId;
+    const isPlaying =
+      sdkIsActiveDevice && sdkPlayerState
+        ? !sdkPlayerState.paused
+        : globalPlaybackState?.is_playing ?? false;
+
+    // Get current position from the appropriate source
+    const currentPosition =
+      sdkIsActiveDevice && sdkPlayerState?.position !== undefined
+        ? sdkPlayerState.position
+        : globalPlaybackState?.progress_ms;
+
+    // Initialize or update local progress when playback state changes
+    if (currentPosition !== undefined) {
+      setLocalProgress(currentPosition);
       lastUpdateTimeRef.current = Date.now();
     }
 
-    // If playing, start local progress timer
-    if (globalPlaybackState?.is_playing && localProgress !== null) {
+    // Start progress timer if we're playing
+    if (isPlaying) {
+      // Store duration in a ref to avoid dependency issues
+      const effectiveDuration =
+        sdkIsActiveDevice && sdkPlayerState?.duration
+          ? sdkPlayerState.duration
+          : globalPlaybackState?.item?.duration_ms ?? 0;
+
       progressTimerRef.current = setInterval(() => {
         const now = Date.now();
         const elapsed = now - lastUpdateTimeRef.current;
@@ -138,9 +163,11 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
 
         setLocalProgress((prev) => {
           if (prev === null) return prev;
-          return prev + elapsed;
+
+          // Ensure we don't exceed the track duration
+          return Math.min(prev + elapsed, effectiveDuration);
         });
-      }, 100); // Update every 100ms for smooth progress
+      }, 30); // Update more frequently (30ms) for smoother progress
     }
 
     return () => {
@@ -149,7 +176,61 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
         progressTimerRef.current = null;
       }
     };
-  }, [globalPlaybackState, localProgress]);
+  }, [
+    // Only include stable dependencies that won't change on every render
+    globalPlaybackState?.is_playing,
+    globalPlaybackState?.device?.id,
+    globalPlaybackState?.progress_ms,
+    sdkPlayerState?.paused,
+    sdkPlayerState?.position,
+    sdkDeviceId,
+  ]);
+
+  // Album rotation effect - optimize for smoother animation
+  useEffect(() => {
+    // Determine if we're playing
+    const sdkIsActiveDevice = globalPlaybackState?.device?.id === sdkDeviceId;
+    const isPlaying =
+      sdkIsActiveDevice && sdkPlayerState
+        ? !sdkPlayerState.paused
+        : globalPlaybackState?.is_playing ?? false;
+
+    // Instead of continuously updating state, we'll dispatch a custom event
+    // that components can listen for to start/stop CSS animations
+    const rotationEvent = new CustomEvent("album-rotation", {
+      detail: {
+        isPlaying,
+        timestamp: Date.now(),
+        currentAngle: rotationAngle,
+      },
+    });
+    window.dispatchEvent(rotationEvent);
+
+    // We still keep the rotation angle state for components that might need the current angle
+    // but we update it much less frequently - only for reference, not for the animation
+    if (isPlaying && rotationTimerRef.current === null) {
+      // Update rotation angle only every second for state sync (not for animation)
+      rotationTimerRef.current = setInterval(() => {
+        setRotationAngle((prev) => (prev + 360 / 20) % 360); // 360° every 20 seconds
+      }, 1000);
+    } else if (!isPlaying && rotationTimerRef.current) {
+      clearInterval(rotationTimerRef.current);
+      rotationTimerRef.current = null;
+    }
+
+    return () => {
+      if (rotationTimerRef.current) {
+        clearInterval(rotationTimerRef.current);
+        rotationTimerRef.current = null;
+      }
+    };
+  }, [
+    globalPlaybackState?.is_playing,
+    sdkPlayerState?.paused,
+    sdkDeviceId,
+    globalPlaybackState?.device?.id,
+    rotationAngle,
+  ]);
 
   // --- SDK Token Fetcher ---
   const getOAuthToken = useCallback(
@@ -318,21 +399,35 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
   const nextTrack = useCallback(async () => {
     if (!playerRef.current || !sdkIsActive()) return;
     try {
+      // Add defensive check before calling nextTrack
+      if (!sdkPlayerState?.track_window?.current_track) {
+        console.warn("No current track to skip from");
+        mutatePlayback();
+        return;
+      }
       await playerRef.current.nextTrack();
     } catch (e) {
-      console.error("Next Err:", e);
+      console.error("Next Track Error:", e);
+      // Force refresh playback state
       mutatePlayback();
     }
-  }, [sdkIsActive, mutatePlayback]);
+  }, [sdkIsActive, sdkPlayerState, mutatePlayback]);
   const previousTrack = useCallback(async () => {
     if (!playerRef.current || !sdkIsActive()) return;
     try {
+      // Add defensive check before calling previousTrack
+      if (!sdkPlayerState?.track_window?.current_track) {
+        console.warn("No current track to skip from");
+        mutatePlayback();
+        return;
+      }
       await playerRef.current.previousTrack();
     } catch (e) {
-      console.error("Prev Err:", e);
+      console.error("Previous Track Error:", e);
+      // Force refresh playback state
       mutatePlayback();
     }
-  }, [sdkIsActive, mutatePlayback]);
+  }, [sdkIsActive, sdkPlayerState, mutatePlayback]);
   const seek = useCallback(
     async (ms: number) => {
       if (!playerRef.current || !sdkIsActive()) return;
@@ -531,6 +626,50 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
     [mutatePlayback] // Add dependencies as needed
   );
 
+  // --- Set Local Progress manually ---
+  const updateLocalProgress = useCallback((positionMs: number) => {
+    // Update local progress state and the last update time reference
+    lastUpdateTimeRef.current = Date.now();
+    setLocalProgress(positionMs);
+  }, []);
+
+  // --- Set rotation angle manually ---
+  const updateRotationAngle = useCallback((angle: number) => {
+    setRotationAngle(angle);
+  }, []);
+
+  // --- Toggle Shuffle ---
+  const toggleShuffle = useCallback(async () => {
+    if (!sdkIsActive()) return;
+
+    try {
+      // Get current shuffle state (default to false if not available)
+      const currentShuffleState =
+        (globalPlaybackState as any)?.shuffle_state ?? false;
+
+      // Make API call to toggle shuffle state
+      const res = await fetch("/api/spotify/shuffle", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: !currentShuffleState }),
+      });
+
+      if (!res.ok) {
+        console.error(`Failed to toggle shuffle: ${res.status}`);
+      } else {
+        console.log(`Shuffle toggled to: ${!currentShuffleState}`);
+        // Update playback state to get the new shuffle state
+        setTimeout(() => mutatePlayback(), 100);
+      }
+    } catch (error) {
+      console.error("Shuffle toggle error:", error);
+    }
+  }, [
+    (globalPlaybackState as any)?.shuffle_state,
+    sdkIsActive,
+    mutatePlayback,
+  ]);
+
   // --- Context Value ---
   const value: PlayerContextValue = {
     playerState: {
@@ -540,6 +679,7 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
       sdkPlayerState,
       globalPlaybackState,
       localProgress,
+      rotationAngle,
       devices,
       isTransferring,
       playbackError,
@@ -553,6 +693,9 @@ export function PlayerProvider({ children }: PlayerProviderProps) {
       transferPlayback,
       playContext,
       setVolume,
+      setLocalProgress: updateLocalProgress,
+      setRotationAngle: updateRotationAngle,
+      toggleShuffle,
     },
     mutatePlayback,
     mutateDevices,

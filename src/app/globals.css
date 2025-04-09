@@ -202,3 +202,36 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Remove the spin animation classes as we'll use dynamic rotation instead */
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 20s linear infinite;
+}
+
+/* We're removing these CSS-based animations
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.album-spin {
+  animation: spin 20s linear infinite;
+}
+
+.album-spin-paused {
+  animation-play-state: paused;
+}
+*/
